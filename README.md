@@ -2,6 +2,8 @@
 
 **120 Hz Flutter web on Android Chrome, with one script tag.**
 
+**Live demo: [shim.mathiewabbas.dev](https://shim.mathiewabbas.dev)**. Open it in Chrome on an Android phone with a 120 Hz screen, pick an app, and tap the badge in the corner to switch between Before and After.
+
 Chrome on Android holds a page's own rendering to 60 frames per second on 120 Hz screens. Flutter web does all of its rendering itself, so its scrolling and animations run at 60 while ordinary web pages scroll at 120. `web/flutter_shim.js` moves Flutter's frame clock and its on-screen canvas to a worker, which Chrome doesn't limit. Your users don't change any settings, and the app's code doesn't change.
 
 Measured on a Pixel 10 Pro XL (Chrome 154, Flutter 3.47.2). Each app was the same build, with and without the shim:
@@ -145,3 +147,7 @@ tool/measure.mjs            measure a page on an Android phone over adb
 tool/android.sh             open the demo on a phone over adb
 Dockerfile, deploy/         container image for Coolify or any Docker host
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE). The example apps fetched by `tool/setup.py` keep their own licenses.

@@ -1,0 +1,42 @@
+# Optional: builds the examples and publishes the demo site to GitHub Pages.
+# Runs only when started from the Actions tab. To use it, set Settings > Pages >
+# Source to "GitHub Actions" (private repos need a paid GitHub plan for Pages).
+name: Demo site (GitHub Pages)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.2
+          cache: true
+      - run: python3 tool/setup.py
+      - run: python3 tool/serve.py --export site-export
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-export
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

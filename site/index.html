@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flutter Shim Demo</title>
+<meta name="description" content="Flutter web apps before and after flutter_shim.js, which lets them render at 120 Hz in Chrome on Android.">
+<style>
+  :root {
+    --bg: #f6f6f7; --surface: #ffffff; --text: #16161a; --muted: #5d5d66; --line: #e3e3e8;
+    --accent: #5b4bdb; --accent-text: #ffffff; --before: #b7791f; --after: #15803d; --chip: #ececf1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b0b0d; --surface: #16161a; --text: #f2f2f4; --muted: #a1a1aa; --line: #2a2a31;
+      --accent: #9a8cff; --accent-text: #0b0b0d; --before: #fbbf24; --after: #4ade80; --chip: #22222a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0b0d; --surface: #16161a; --text: #f2f2f4; --muted: #a1a1aa; --line: #2a2a31;
+    --accent: #9a8cff; --accent-text: #0b0b0d; --before: #fbbf24; --after: #4ade80; --chip: #22222a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: max(24px, env(safe-area-inset-top)) 16px 48px; }
+  h1 { font-size: 28px; line-height: 1.2; margin: 8px 0 12px; letter-spacing: -0.01em; }
+  p { margin: 0 0 12px; color: var(--muted); }
+  .status { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); margin: 20px 0; font-size: 15px; }
+  .status b { color: var(--text); }
+  .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 7px; }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 24px 0 12px; }
+  .controls label { font-weight: 600; font-size: 14px; }
+  select { font: inherit; font-size: 15px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; max-width: 100%; }
+  .apps { display: grid; gap: 12px; }
+  .app { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  .app h2 { margin: 0 0 4px; font-size: 18px; }
+  .app p { font-size: 15px; margin-bottom: 8px; }
+  .note { font-size: 13px; }
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .buttons a { display: flex; justify-content: center; align-items: center; gap: 8px; min-height: 44px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 15px; background: var(--chip); color: var(--text); }
+  .buttons a.after { background: var(--accent); color: var(--accent-text); }
+  .buttons a::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--before); }
+  .buttons a.after::before { background: var(--accent-text); }
+  .missing { font-size: 14px; margin-top: 10px; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--chip); padding: 1px 5px; border-radius: 5px; word-break: break-all; }
+  footer { margin-top: 32px; font-size: 14px; color: var(--muted); }
+  footer a, .status a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Flutter web at 120 Hz on Android</h1>
+  <p>Chrome on Android holds a page's own animation to 60 frames per second on 120 Hz screens, so Flutter web apps scroll and animate at 60. <code>flutter_shim.js</code> moves Flutter's frame clock and canvas to a worker, which Chrome doesn't limit.</p>
+  <p>Each example below runs from one build, twice: <b>Before</b> as it ships, <b>After</b> with the shim. The badge in the corner shows frames per second; tap it to switch versions on the same screen.</p>
+
+  <div class="status" id="status"></div>
+
+  <div class="controls">
+    <label for="renderer">Renderer</label>
+    <select id="renderer">
+      <option value="skwasm-st">skwasm, single-threaded (recommended)</option>
+      <option value="skwasm">skwasm, multi-threaded</option>
+      <option value="canvaskit">CanvasKit</option>
+      <option value="">App default</option>
+    </select>
+  </div>
+  <div class="apps" id="apps"></div>
+
+  <footer>
+    <p><a href="probe/">Clock probe</a>: for testing on iPhone and other browsers. It measures whether a worker gets a faster frame clock than the page, which is what the shim needs.</p>
+  </footer>
+</main>
+<script>
+  const androidChrome = /Android/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent);
+  const isolated = self.crossOriginIsolated;
+  document.getElementById('status').innerHTML = androidChrome
+    ? `<span class="dot" style="background:var(--after)"></span><span><b>Android Chrome: the shim will run here.</b> Try a slow scroll and a fling in each version.</span>`
+    : `<span class="dot" style="background:var(--before)"></span><span><b>This isn't Chrome on Android,</b> so Before and After behave the same here. Open this page in Chrome on an Android phone with a 120 Hz screen.</span>`;
+
+  const select = document.getElementById('renderer');
+  if (!isolated) select.querySelector('[value="skwasm"]').textContent = 'skwasm, multi-threaded (not available on this host)';
+  try { select.value = localStorage.getItem('renderer') ?? select.value; } catch {}
+
+  const render = (apps) => {
+    const renderer = select.value;
+    document.getElementById('apps').replaceChildren(...apps.map((app) => {
+      const card = document.createElement('section');
+      card.className = 'app';
+      const query = renderer && app.wasm ? `?renderer=${renderer}` : '';
+      const link = (variant) => `${app.id}/${variant}/${query}${app.start || ''}`;
+      card.innerHTML = `<h2></h2><p></p>${app.note ? '<p class="note"></p>' : ''}` + (app.built
+        ? `<div class="buttons"><a class="before" href="${link('before')}">Before</a><a class="after" href="${link('after')}">After</a></div>`
+        : `<p class="missing">Not built yet: run <code>python3 tool/setup.py ${app.id}</code></p>`);
+      card.querySelector('h2').textContent = app.title;
+      card.querySelector('p').textContent = app.description;
+      if (app.note) card.querySelector('.note').textContent = app.note;
+      return card;
+    }));
+  };
+
+  fetch('apps.json').then((r) => r.json()).then((apps) => {
+    render(apps);
+    select.addEventListener('change', () => {
+      try { localStorage.setItem('renderer', select.value); } catch {}
+      render(apps);
+    });
+  });
+</script>
+</body>
+</html>

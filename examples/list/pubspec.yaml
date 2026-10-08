@@ -1,0 +1,17 @@
+name: list_example
+description: "A plain Flutter scroll view: 2,000 rows of text, nothing else. Shows what the shim does when frames are cheap."
+publish_to: 'none'
+version: 1.0.0
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

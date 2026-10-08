@@ -1,0 +1,16 @@
+# Build output and fetched example apps
+/build/
+/.cache/
+/site-export/
+
+# Flutter / Dart
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+examples/list/build/
+examples/list/.metadata
+
+.DS_Store
+__pycache__/

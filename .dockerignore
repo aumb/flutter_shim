@@ -1,0 +1,9 @@
+.git
+.github
+build
+.cache
+site-export
+**/.dart_tool
+**/build
+**/pubspec.lock
+.DS_Store

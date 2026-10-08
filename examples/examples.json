@@ -1,0 +1,42 @@
+[
+  {
+    "id": "list",
+    "title": "Plain list",
+    "description": "2,000 rows of text and nothing else. Frames are cheap, so this shows the shim on its own.",
+    "local": "examples/list",
+    "wasm": true,
+    "start": ""
+  },
+  {
+    "id": "material_3_demo",
+    "title": "Material 3 demo",
+    "description": "Flutter's official Material 3 sample: buttons, cards, lists, colors and typography.",
+    "repo": "https://github.com/flutter/samples.git",
+    "commit": "63411527b7f617f1fb8253b79091f18fa4de69de",
+    "sparse": ["material_3_demo", "analysis_defaults"],
+    "path": "material_3_demo",
+    "wasm": true,
+    "start": ""
+  },
+  {
+    "id": "gallery",
+    "title": "Flutter Gallery",
+    "description": "The classic Flutter showcase (archived). Opens on Fortnightly, its news reader study.",
+    "repo": "https://github.com/flutter/gallery.git",
+    "commit": "d12640d4b08ee6e706fd8c64a83fba0620c9aa8d",
+    "path": ".",
+    "wasm": false,
+    "start": "#/fortnightly",
+    "note": "JavaScript build only: its dependencies use dart:html, which can't compile to WebAssembly, so it always uses CanvasKit."
+  },
+  {
+    "id": "wonderous",
+    "title": "Wonderous",
+    "description": "gskinner's showcase app: large images, parallax and long editorial pages.",
+    "repo": "https://github.com/gskinnerTeam/flutter-wonderous-app.git",
+    "commit": "747b945a7e5239356bf2664261aa2f3b020b8898",
+    "path": ".",
+    "wasm": true,
+    "start": "#/home/wonder/chichenItza"
+  }
+]

@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Frame Clock Probe</title>
+<meta name="description" content="Measures the page's and a worker's animation frame rate, to see whether flutter_shim.js could help in this browser.">
+<style>
+  :root { --bg: #f6f6f7; --surface: #fff; --text: #16161a; --muted: #5d5d66; --line: #e3e3e8; --accent: #5b4bdb; --accent-text: #fff; --good: #15803d; --warn: #b7791f; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #0b0b0d; --surface: #16161a; --text: #f2f2f4; --muted: #a1a1aa; --line: #2a2a31; --accent: #9a8cff; --accent-text: #0b0b0d; --good: #4ade80; --warn: #fbbf24; }
+  }
+  :root[data-theme="dark"] { --bg: #0b0b0d; --surface: #16161a; --text: #f2f2f4; --muted: #a1a1aa; --line: #2a2a31; --accent: #9a8cff; --accent-text: #0b0b0d; --good: #4ade80; --warn: #fbbf24; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: max(24px, env(safe-area-inset-top)) 16px 40px; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 12px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px; margin: 16px 0; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .value { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #verdict { font-weight: 600; color: var(--text); }
+  button { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-text); font: 600 16px system-ui, -apple-system, sans-serif; }
+  #mover { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); margin: 8px 0 0; }
+  canvas { position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; opacity: 0.01; }
+  small { color: var(--muted); display: block; margin-top: 12px; font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Frame clock probe</h1>
+  <p>Keep this page open and untouched for about 10 seconds, then tap <b>Copy results</b> and send them along.</p>
+  <div class="card">
+    <div class="row"><span>Page frame rate</span><span class="value" id="page">measuring…</span></div>
+    <div class="row"><span>Worker frame rate</span><span class="value" id="worker">measuring…</span></div>
+    <div class="row"><span>Worker frame timing</span><span class="value" id="jitter">measuring…</span></div>
+  </div>
+  <p id="verdict">Measuring…</p>
+  <div id="mover"></div>
+  <p></p>
+  <button id="copy">Copy results</button>
+  <small id="device"></small>
+</main>
+<canvas id="c" width="1" height="1"></canvas>
+<script>
+// The shim needs a worker whose requestAnimationFrame (with a transferred
+// canvas) ticks faster than the page's, in step with the screen. This page
+// measures both over 2-second windows and keeps the latest result.
+const $ = (id) => document.getElementById(id);
+const device = { userAgent: navigator.userAgent, screen: `${screen.width}x${screen.height} @${devicePixelRatio}x` };
+$('device').textContent = device.userAgent;
+const results = { page: null, worker: null, workerSpread: null, workerRaf: null };
+
+let pageFrames = 0, x = 0;
+const step = () => { pageFrames++; x = (x + 3) % 240; $('mover').style.transform = `translateX(${x}px)`; requestAnimationFrame(step); };
+requestAnimationFrame(step);
+
+try {
+  const canvas = $('c').transferControlToOffscreen();
+  const worker = new Worker(URL.createObjectURL(new Blob([`
+    onmessage = ({ data: canvas }) => {
+      const ctx = canvas.getContext('2d');
+      if (typeof requestAnimationFrame !== 'function') { postMessage({ raf: false }); return; }
+      let times = [];
+      const tick = (t) => { times.push(t); ctx.fillRect(0, 0, 1, 1); requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+      setInterval(() => {
+        const gaps = times.slice(1).map((t, i) => t - times[i]).sort((a, b) => a - b);
+        const q = (p) => gaps.length ? gaps[Math.min(gaps.length - 1, Math.floor(p * gaps.length))] : 0;
+        postMessage({ raf: true, rate: (times.length - 1) / 2, p10: q(0.1), p90: q(0.9) });
+        times = times.slice(-1);
+      }, 2000);
+    };`], { type: 'text/javascript' })));
+  worker.onmessage = ({ data }) => {
+    results.workerRaf = data.raf;
+    if (!data.raf) return;
+    results.worker = data.rate;
+    results.workerSpread = `${data.p10.toFixed(1)}–${data.p90.toFixed(1)} ms between frames`;
+  };
+  worker.onerror = (e) => { results.workerRaf = false; results.error = e.message; };
+  worker.postMessage(canvas, [canvas]);
+} catch (error) {
+  results.workerRaf = false;
+  results.error = String(error);
+}
+
+const verdict = () => {
+  const { page, worker, workerRaf } = results;
+  if (workerRaf === false) return 'Workers have no frame clock with a canvas here, so the shim can\'t run in this browser.';
+  if (page == null || worker == null) return 'Measuring…';
+  if (page >= 100) return 'This browser already runs page animation at full rate: Flutter doesn\'t need the shim here.';
+  if (worker >= page * 1.3 && worker > 75) return 'The worker clock is faster than the page clock: the shim\'s approach can work in this browser.';
+  return 'The worker clock is no faster than the page clock, so the shim can\'t help in this browser.';
+};
+
+setInterval(() => {
+  results.page = pageFrames / 2;
+  pageFrames = 0;
+  $('page').textContent = `${results.page.toFixed(0)} fps`;
+  $('worker').textContent = results.workerRaf === false ? 'not available' : results.worker == null ? 'measuring…' : `${results.worker.toFixed(0)} fps`;
+  $('jitter').textContent = results.workerSpread ?? (results.workerRaf === false ? '—' : 'measuring…');
+  $('verdict').textContent = verdict();
+}, 2000);
+
+$('copy').addEventListener('click', async () => {
+  const text = [
+    `Page: ${results.page?.toFixed(0) ?? '?'} fps`,
+    `Worker: ${results.workerRaf === false ? 'no requestAnimationFrame' : `${results.worker?.toFixed(0) ?? '?'} fps (${results.workerSpread ?? '?'})`}`,
+    verdict(),
+    `Screen: ${device.screen}`,
+    device.userAgent,
+  ].join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    $('copy').textContent = 'Copied';
+  } catch {
+    $('copy').textContent = 'Copy failed: select the text below';
+    $('device').textContent = text;
+  }
+  setTimeout(() => { $('copy').textContent = 'Copy results'; }, 2000);
+});
+</script>
+</body>
+</html>

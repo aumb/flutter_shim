@@ -50,7 +50,7 @@
 <body>
 <main>
   <h1>Flutter web at 120 Hz</h1>
-  <p>Chrome on Android and Safari both hold a page's own animation to 60 frames per second on a 120 Hz screen, so Flutter web apps scroll and animate at 60. <code>flutter_shim.js</code> lifts both: on Android it moves Flutter's frame clock and canvas to a worker, which Chrome doesn't limit; on Safari it builds a clock out of timers and hands Flutter's canvas over, which is shown at the screen's rate rather than the page's.</p>
+  <p>Chrome on Android and Safari both hold a page's own animation to 60 frames per second on a 120 Hz screen, so Flutter web apps scroll and animate at 60. <code>flutter_shim.js</code> lifts both. It hands Flutter's canvas over, which is then shown at the screen's rate rather than the page's, and runs Flutter's frames on a clock of its own: a worker's on Android, which Chrome doesn't limit, and one built out of timers on Safari.</p>
   <p>Each example below runs from one build, twice: <b>Before</b> as it ships, <b>After</b> with the shim. The badge in the corner shows frames per second; tap it to switch versions on the same screen.</p>
 
   <div class="status" id="status"></div>

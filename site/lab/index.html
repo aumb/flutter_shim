@@ -43,6 +43,10 @@
 //   ntimer   the main thread draws into a normal canvas on a timer
 //   mbitmap  the main thread presents ImageBitmaps to a handed-over canvas, as Flutter does
 //   mraf2x   like mbitmap, but paced by requestAnimationFrame plus one tick between frames
+//   mgl      WebGL into a handed-over canvas on a timer, the way CanvasKit draws in Safari
+//   mglraf2x like mgl, but drawn inside requestAnimationFrame plus one tick between
+//   wclock   a worker is only the clock: the page draws each frame into a canvas it
+//            handed over itself, on every tick of the worker's requestAnimationFrame
 // Options: hz=120 (timer rate), keepalive=1 (adds a 2 px CSS animation in a corner),
 //          log=<url> (POSTs the produced-frame rate there once a second).
 const params = new URLSearchParams(location.search);
@@ -59,6 +63,7 @@ const TESTS = {
   mraf2x: 'Main-thread ImageBitmap, paced by the frame clock and halfway between',
   mgl: 'WebGL into a hand-off canvas on a timer (how CanvasKit draws)',
   mglraf2x: 'WebGL into a hand-off canvas, paced by the frame clock and halfway between',
+  wclock: "Page draws into its own hand-off canvas, on a worker's frame clock",
 };
 
 if (!test || !TESTS[test]) {
@@ -186,6 +191,22 @@ function run(test) {
     const off = canvas.transferControlToOffscreen();
     const ctx = off.getContext('2d');
     paced(hz, () => drawFrame(ctx, off.width, off.height, produced++, dpr));
+  } else if (test === 'wclock') {
+    // The question this answers: does a worker have to show the frames, or
+    // only to keep time? Here it only ticks, on its own requestAnimationFrame,
+    // and the page draws each frame and shows it through a canvas it handed
+    // over itself, the way Flutter presents (ImageBitmap to 'bitmaprenderer').
+    const off = canvas.transferControlToOffscreen();
+    const ctx = off.getContext('bitmaprenderer');
+    const scratch = new OffscreenCanvas(off.width, off.height);
+    const sctx = scratch.getContext('2d');
+    const clock = new Worker(URL.createObjectURL(new Blob([
+      'const tick = () => { postMessage(0); requestAnimationFrame(tick); }; requestAnimationFrame(tick);',
+    ], { type: 'text/javascript' })));
+    clock.onmessage = () => {
+      drawFrame(sctx, scratch.width, scratch.height, produced++, dpr);
+      ctx.transferFromImageBitmap(scratch.transferToImageBitmap());
+    };
   } else if (test === 'mgl' || test === 'mglraf2x') {
     // CanvasKit draws straight into a WebGL canvas, so the hand-off has to
     // work for WebGL too, not only for the 2D and bitmap paths.

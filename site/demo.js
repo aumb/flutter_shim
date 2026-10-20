@@ -10,9 +10,12 @@
   // ?anyplatform runs the Android path anywhere; ?webkit=0 turns the Safari
   // path off again. The demo turns it on, since a tester on an Apple device
   // is here to see what it does.
+  // ?fps=<n> and ?touch=0 pass the shim's other two options through.
   window.flutterShimConfig = {
     anyPlatform: params.has('anyplatform'),
     webkit: params.get('webkit') !== '0',
+    fps: Number(params.get('fps')) || undefined,
+    touch: params.get('touch') !== '0',
   };
 
   // ?inspect=1 reports how this browser's Flutter draws and presents: which

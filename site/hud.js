@@ -7,8 +7,11 @@
   const variant = document.currentScript?.dataset.variant ?? 'before';
   const other = variant === 'after' ? 'before' : 'after';
 
-  // Frames drawn: on the normal path Flutter calls transferFromImageBitmap on
-  // the page; with the shim active, the shim counts the frames it forwards.
+  // Frames drawn. Without the shim, Flutter's present calls are counted here
+  // (CanvasKit in Safari draws straight into WebGL and makes none, so it reads
+  // as idle there). With it, the shim counts the frames it runs, and only
+  // that count is used: its present calls also land on this prototype, and
+  // adding the two would show each frame twice.
   let drawn = 0;
   let stamps = [];
   const proto = window.ImageBitmapRenderingContext?.prototype;
@@ -19,7 +22,7 @@
       return original.call(this, bitmap);
     };
   }
-  const frames = () => drawn + (window.flutterShim?.frames ?? 0);
+  const frames = () => (window.flutterShim?.active ? window.flutterShim.frames : drawn);
 
   const badge = document.createElement('a');
   badge.href = '#';
@@ -72,7 +75,7 @@
       // What the shim thinks it is doing, so a device that can't be opened in
       // a debugger (an iPhone, a simulator) still says it plainly.
       shim: window.flutterShim
-        ? { active: window.flutterShim.active, path: window.flutterShim.path, error: window.flutterShim.error, frames: window.flutterShim.frames }
+        ? { active: window.flutterShim.active, path: window.flutterShim.path, fps: window.flutterShim.fps, error: window.flutterShim.error, frames: window.flutterShim.frames }
         : null,
     }));
   }, 500);

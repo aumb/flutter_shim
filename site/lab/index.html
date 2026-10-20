@@ -50,6 +50,21 @@
 // Options: hz=120 (timer rate), keepalive=1 (adds a 2 px CSS animation in a corner),
 //          log=<url> (POSTs the produced-frame rate there once a second).
 const params = new URLSearchParams(location.search);
+// ?log=<url> is accepted only for this site or the visitor's own machine:
+// anything else would let a link send a visitor's browser details to whoever
+// wrote it.
+const allowedLog = (value) => {
+  if (!value) return null;
+  try {
+    const url = new URL(value, location.href);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    const host = url.hostname;
+    const local = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+    return url.origin === location.origin || local ? url.href : null;
+  } catch {
+    return null;
+  }
+};
 const test = params.get('test');
 const TESTS = {
   raf: 'Page frame clock (reference, usually 60)',
@@ -152,7 +167,7 @@ function run(test) {
   let produced = 0; // frames drawn by this test, for the HUD
   const report = (rate) => {
     hud.textContent = `${test} · ${rate.toFixed(0)} frames/s produced`;
-    const log = params.get('log');
+    const log = allowedLog(params.get('log'));
     if (log) navigator.sendBeacon(log, JSON.stringify({ test, hz, rate, run: params.get('run'), ua: navigator.userAgent }));
   };
 

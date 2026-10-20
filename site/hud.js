@@ -48,7 +48,7 @@
   // When the page was opened with ?log=<url> (tool/safari.py does that), each
   // second's frame rate and pacing go there too, since a browser that can't
   // be driven from the outside has to report its own numbers.
-  const log = params.get('log');
+  const log = window.flutterShimDemo?.log ?? null; // checked by demo.js: this site or localhost only
 
   let lastFrames = frames(), lastTime = performance.now();
   setInterval(() => {

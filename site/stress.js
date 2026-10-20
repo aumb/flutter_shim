@@ -26,7 +26,7 @@
 
   // With ?log=<url>, say how much input is going in, so a run that measures
   // no frames can be told apart from one that drove no input.
-  const log = params.get('log');
+  const log = window.flutterShimDemo?.log ?? null; // checked by demo.js: this site or localhost only
   let sent = 0;
   if (log) {
     let last = 0;

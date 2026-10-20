@@ -18,6 +18,25 @@
     touch: params.get('touch') !== '0',
   };
 
+  // ?log=<url> sends measurements there, which is how tool/safari.py reads
+  // numbers out of a browser it can't drive. Only this site or the visitor's
+  // own machine is accepted: anything else would let a link send a visitor's
+  // browser details to whoever wrote it. hud.js and stress.js take the
+  // checked address from here, so the rule lives in one place on these pages.
+  const allowedLog = (value) => {
+    if (!value) return null;
+    try {
+      const url = new URL(value, location.href);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+      const host = url.hostname;
+      const local = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+      return url.origin === location.origin || local ? url.href : null;
+    } catch {
+      return null;
+    }
+  };
+  const log = allowedLog(params.get('log'));
+
   // ?inspect=1 reports how this browser's Flutter draws and presents: which
   // canvas contexts it asks for, and where those canvases end up. The shim
   // has to hook whatever that turns out to be, and it differs by browser.
@@ -54,7 +73,6 @@
         };
       }
     }
-    const log = params.get('log');
     setInterval(() => {
       const times = drawTimes.splice(0);
       const frames = times.filter((t, i) => i === 0 || t - times[i - 1] > 3);
@@ -101,6 +119,8 @@
   };
   const canRunWasm = () => isBlink && hasWasmGC();
   window.flutterShimDemo = {
+    // Where measurements may go: the checked ?log= address, or null.
+    log,
     // Why the renderer asked for isn't the one running, when that happens.
     rendererNote: null,
     load(options = {}) {

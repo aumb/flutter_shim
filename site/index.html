@@ -84,7 +84,29 @@
 
   const select = document.getElementById('renderer');
   if (!isolated) select.querySelector('[value="skwasm"]').textContent = 'skwasm, multi-threaded (not available on this host)';
-  try { select.value = localStorage.getItem('renderer') ?? select.value; } catch {}
+  // Flutter's loader only accepts the skwasm build on Blink: its default
+  // wasmAllowList is {blink: true, gecko: false, webkit: false}. Offering it
+  // in Safari or Firefox would hand out links that open a blank page, since
+  // naming a renderer replaces the loader's own choice of a build that runs.
+  // Both tests are the loader's own, so this agrees with it.
+  let skwasmAvailable = typeof Intl.v8BreakIterator !== 'undefined' && typeof Intl.Segmenter !== 'undefined';
+  try {
+    skwasmAvailable = skwasmAvailable &&
+      WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 95, 1, 120, 0]));
+  } catch {
+    skwasmAvailable = false;
+  }
+  if (!skwasmAvailable) {
+    for (const option of select.querySelectorAll('[value="skwasm"], [value="skwasm-st"]')) {
+      option.disabled = true;
+      option.textContent += ' (Chromium only)';
+    }
+    select.value = 'canvaskit';
+  }
+  try {
+    const stored = localStorage.getItem('renderer');
+    if (stored !== null && !select.querySelector(`[value="${CSS.escape(stored)}"]`)?.disabled) select.value = stored;
+  } catch {}
 
   const render = (apps) => {
     const renderer = select.value;

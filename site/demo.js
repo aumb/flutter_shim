@@ -81,15 +81,39 @@
     }, 8000);
   }
 
+  // Flutter's loader only accepts the skwasm build on Blink: its default
+  // wasmAllowList is {blink: true, gecko: false, webkit: false}. Naming a
+  // renderer in the config replaces the loader's own choice, so naming skwasm
+  // in Safari or Firefox leaves no build it will accept and the page stays
+  // blank. Both tests below are the loader's own, so this agrees with it.
+  const isBlink = typeof Intl.v8BreakIterator !== 'undefined' && typeof Intl.Segmenter !== 'undefined';
+  const hasWasmGC = () => {
+    try {
+      // A module whose type section declares a struct: only a WasmGC engine
+      // validates it.
+      return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 95, 1, 120, 0]));
+    } catch {
+      return false;
+    }
+  };
+  const canRunWasm = () => isBlink && hasWasmGC();
   window.flutterShimDemo = {
+    // Why the renderer asked for isn't the one running, when that happens.
+    rendererNote: null,
     load(options = {}) {
       const { serviceWorkerSettings, ...rest } = options;
       const config = { ...rest.config };
       const renderer = params.get('renderer');
       const wanted = renderer === 'skwasm-st' ? 'skwasm' : renderer;
-      if (wanted && _flutter.buildConfig?.builds?.some((b) => b.renderer === wanted)) {
-        config.renderer = wanted;
-        if (renderer === 'skwasm-st') config.forceSingleThreadedSkwasm = true;
+      const build = _flutter.buildConfig?.builds?.find((b) => b.renderer === wanted);
+      if (wanted && build) {
+        if (build.compileTarget === 'dart2wasm' && !canRunWasm()) {
+          window.flutterShimDemo.rendererNote =
+            `Flutter only runs ${wanted} in Chromium browsers, so this one gets the app's own choice instead.`;
+        } else {
+          config.renderer = wanted;
+          if (renderer === 'skwasm-st') config.forceSingleThreadedSkwasm = true;
+        }
       }
       return _flutter.loader.load({ ...rest, config });
     },

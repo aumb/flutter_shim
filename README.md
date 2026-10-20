@@ -208,6 +208,80 @@ sh tool/cpu.sh 6                                                 # what it costs
 
 `?stress=drag` on an example page makes it scroll itself with synthetic touch events at the rate a touchscreen would deliver them (`?stress=fling` for repeated flings, `?stress=wheel` for a pointer). `?webkit=0` turns the Safari path off again for a Before/After comparison, and `?inspect=1` reports how this browser's Flutter draws and presents.
 
+## Time to first frame
+
+`tool/ttff.mjs` measures how long a Flutter web app takes to start in Chrome. It times everything from the moment the browser starts navigating to the page until the app's first frame is on the screen, then until the screen settles into what the app actually shows. It works on any URL, local or deployed, with no change to the app, and it splits the wait into the steps of Flutter's startup, so a slow start can be pinned on a download, the engine or the app.
+
+```sh
+node tool/ttff.mjs "http://localhost:8800/list/before/?hud=0"
+node tool/ttff.mjs https://example.com/ --runs 10 --net slow-4g --cpu 4   # a mid-range phone on a slow network
+node tool/ttff.mjs <url> <another url>                                    # side by side, loads interleaved
+```
+
+The plain list from this repo's demo server, in headless Chrome 155 on an M3 Max (`?hud=0` hides the demo's badge, which would otherwise be the first thing painted):
+
+```
+                                              median ms   min–max
+  HTML received                                    1   1–2
+    flutter_bootstrap.js downloaded               11   11–15
+  Flutter loader started                          18   15–30
+    main.dart.mjs downloaded                      21   18–33
+    main.dart.wasm downloaded                     24   22–36
+    skwasm.js (www.gstatic.com) downloaded       202   149–454
+    skwasm.wasm (www.gstatic.com) downloaded     472   443–1012
+  Dart entrypoint running                        482   453–1022
+    2 fonts downloaded                           655   579–1167
+  engine initialized                             658   583–1170
+  <flutter-view> in the page                     660   586–1172
+  app's main() returned                          663   589–1174
+  first frame built                              708   636–1215
+  first frame presented                          756   689–1268
+  first-contentful-paint                         767   700–1279
+  first frame on screen                          781   713–1292      ← time to first frame
+  screen settled                                 781   713–1292
+
+  Time to first frame: 781 ms (median of 5; 713–1292), on screen.
+  Screen settled:      781 ms (median of 5; 713–1292), the last change on screen.
+  Loaded before the first frame: 12 files, 2.9 MB over the network. Largest: main.dart.wasm 1.5 MB, skwasm.wasm (www.gstatic.com) 1.2 MB, ...
+```
+
+| Row | What happened by then |
+|---|---|
+| HTML received | the page's HTML finished downloading |
+| Flutter loader started | `flutter_bootstrap.js` called `_flutter.loader.load()` |
+| *file* downloaded | a file startup waits on arrived: Flutter's scripts, the app's `main.dart.js` or `.wasm`, the renderer (CanvasKit or skwasm), the fonts |
+| Dart entrypoint running | the app's compiled code is running and has handed the loader its engine initializer |
+| engine initialized | `initializeEngine()` is done: the renderer is downloaded and compiled, and the default fonts are in |
+| app's main() returned | `runApp()` is done, and the first frame is scheduled |
+| first frame built | the framework built its first frame (Flutter's own `flutter-first-frame` event) |
+| first frame presented | that frame's pixels were handed to the page's canvas |
+| first frame on screen | **the time to first frame**: the first screenshot in Chrome's trace that shows it |
+| screen settled | the last change on screen, once the app has drawn nothing and the network has been idle for a second |
+| first-contentful-paint | Chrome's own, listed only when it is the Flutter frame, that is when nothing else on the page painted first |
+
+**Why there are two answers.** A first frame is often not the app yet. The Gallery's Fortnightly opens on a white page with only its Back button, and Wonderous on an empty dark screen; their real content appears 0.7–0.9 s later, as their fonts and images arrive. `--out DIR` saves, for every load, what the screen showed at its first frame and once it settled, so you can see what each number stands for. An app that keeps animating never settles, and the tool says so instead of giving a time.
+
+**Where the time went, on these examples.** By default Flutter fetches its renderer (`canvaskit.wasm` or `skwasm.wasm`) from `www.gstatic.com`, and a dart2wasm app can't start until it arrives. In the run above that one file is the longest wait, and it is also the least predictable. In another run, one load of the plain list took 5.3 s instead of about 0.75, nearly all of the difference spent waiting on `skwasm.wasm`. `flutter build web --no-web-resources-cdn` serves the renderer from your own server instead. Once the entrypoint is running, the engine fetches its default font, Roboto, from `fonts.gstatic.com` and waits for it. That fetch is most of the 150–200 ms between "Dart entrypoint running" and "engine initialized". Run several loads either way (5 by default); the min–max column shows how much a single one can mislead.
+
+**Options.**
+
+- `--warm` measures repeat visits. Without it, each load is a first visit, in a new browser profile with an empty cache and no service worker. With it, one unmeasured load fills the cache first. `tool/serve.py` sends `Cache-Control: no-store`, so on the demo server only the files from Google's servers are cached.
+- `--net slow-4g`, `fast-4g`, `3g` or `down/up/latency` (kbit/s, kbit/s, ms) throttles the network. The three presets are DevTools' Slow 4G, Fast 4G and Slow 3G. `--cpu 4` slows the CPU down four times, and `--viewport 412x915@2.6` sets the page size and pixel ratio.
+- `--headed` uses a visible window instead of headless Chrome, so frames go through the real display. Keep the window uncovered.
+- `--settle S` is how long to wait for the screen to settle (10 s by default; 0 skips it).
+- `--out DIR --trace` also saves each load's DevTools trace, which opens in the Performance panel with the milestones as `flutter_ttff:*` marks. Recording it slows the page a little, so time those loads separately.
+
+**How it measures.** `web/flutter_ttff.js` is injected into the page before any of its own scripts run. It catches `_flutter.loader` as `flutter.js` creates it and wraps each hand-over that follows (`didCreateEngineInitializer`, `initializeEngine`, `runApp`). It also listens for `flutter-first-frame` and watches the two ways a Flutter frame reaches the page's canvas: an `ImageBitmap` passed to a `bitmaprenderer` context (CanvasKit and skwasm in Chrome), or WebGL drawing into the canvas (CanvasKit in Safari). Both are still seen when the canvas was handed to an `OffscreenCanvas` first, as the shim does. Meanwhile Chrome records screenshots in its trace, each with the time its frame was expected on the display. A mark the probe makes in both clocks lines the two up, so "on screen" is the first screenshot after Flutter presented its frame that differs from what was there before. Without that, a frame the compositor already had in flight could be mistaken for Flutter's. How it picks those screenshots has tests of its own (`node --test`).
+
+**Other browsers.** The probe works on its own in any browser. Load it before Flutter, as with the shim, and read `window.flutterTtff`, or the table it logs to the console (`window.flutterTtffConfig = { beacon: url }` also sends each report there):
+
+```html
+<script src="flutter_ttff.js"></script>
+<script src="flutter_bootstrap.js" async></script>
+```
+
+It was checked in Safari 26.6 on the list, with and without the shim, and on the Gallery with it. There CanvasKit draws straight into a WebGL canvas, and "presented" came 1–5 ms before Safari's own first-contentful-paint. Without Chrome's trace there is no "on screen", and "settled" is only what the page can see: the last frame before a second in which no frame was drawn and no file finished loading.
+
 ## Hosting
 
 `tool/serve.py --export site-export` writes the whole demo as static files. All links are relative, so it works at a domain root or under any path.
@@ -235,7 +309,9 @@ docker run --rm -p 8080:80 flutter-shim-demo   # http://localhost:8080
 
 ```
 web/flutter_shim.js         the shim: one presenter, a worker clock for Chrome, a timer clock for Safari
+web/flutter_ttff.js         times a Flutter app's startup from inside the page, in any browser
 test/shim.test.mjs          tests for its timing arithmetic (node --test)
+test/ttff.test.mjs          tests for how tool/ttff.mjs reads the screen
 examples/examples.json      the example apps: source, pinned commit, start screen
 examples/list/              the plain list app
 examples/gallery/index.html replacement page for the Gallery
@@ -247,6 +323,7 @@ site/stress.js              scripted input, so a page can be measured without a 
 tool/setup.py               fetch, fix and build the examples
 tool/serve.py               serve the demo, or export it as static files
 tool/measure.mjs            measure a page on an Android phone over adb
+tool/ttff.mjs               time to first frame in Chrome: each step of startup, and when the screen settled
 tool/android.sh             open the demo on a phone over adb
 tool/safari.py              run a probe page in Safari and print what it measured
 tool/presented.swift        count the frames that reached the screen, from outside the browser

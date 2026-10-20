@@ -62,7 +62,9 @@ def variant_page(example_id, variant):
     html = (BUILDS / example_id / 'index.html').read_text()
     html = re.sub(r'<base href="[^"]*">', '<base href="../app/">', html, count=1)
     # Relative to the base, ../../ is the site root.
-    tags = ['<script src="../../demo.js"></script>']
+    # stress.js goes before the shim, so it keeps the browser's own frame
+    # clock for pacing the input it synthesizes.
+    tags = ['<script src="../../demo.js"></script>', '<script src="../../stress.js"></script>']
     if variant == 'after':
         tags.append('<script src="../../flutter_shim.js"></script>')
     tags.append(f'<script src="../../hud.js" data-variant="{variant}" defer></script>')
@@ -129,6 +131,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header('Cross-Origin-Embedder-Policy', 'credentialless')
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        """Takes measurements beaconed by the probe pages (their ?log= option).
+
+        Each body is printed as it arrives, which is how tool/safari.py reads
+        results out of a browser it can't otherwise talk to. The exported site
+        is static files, so this exists only while serving locally.
+        """
+        if urllib.parse.urlparse(self.path).path != '/log':
+            self.send_error(404)
+            return
+        body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        self.send_response(204)
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+        print(body.decode('utf-8', 'replace'), flush=True)
 
     def log_message(self, *args):
         pass

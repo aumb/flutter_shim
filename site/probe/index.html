@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Frame Clock Probe</title>
-<meta name="description" content="Measures the page's and a worker's animation frame rate, to see whether flutter_shim.js could help in this browser.">
+<meta name="description" content="Measures the clocks a page can animate on, and shows the two drawing paths side by side, to see whether flutter_shim.js can help on this device.">
 <style>
   :root { --bg: #f6f6f7; --surface: #fff; --text: #16161a; --muted: #5d5d66; --line: #e3e3e8; --accent: #5b4bdb; --accent-text: #fff; --good: #15803d; --warn: #b7791f; }
   @media (prefers-color-scheme: dark) {
@@ -23,7 +23,9 @@
   #verdict { font-weight: 600; color: var(--text); }
   button { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: var(--accent); color: var(--accent-text); font: 600 16px system-ui, -apple-system, sans-serif; }
   #mover { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); margin: 8px 0 0; }
-  canvas { position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; opacity: 0.01; }
+  canvas#c { position: fixed; right: 0; bottom: 0; width: 1px; height: 1px; opacity: 0.01; }
+  .stripe { width: 100%; height: 56px; display: block; border-radius: 10px; background: #000; }
+  .stripe-label { font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
   small { color: var(--muted); display: block; margin-top: 12px; font-size: 12px; word-break: break-all; }
 </style>
 </head>
@@ -38,7 +40,15 @@
   </div>
   <p id="verdict">Measuring…</p>
   <div id="mover"></div>
-  <p></p>
+
+  <div class="card">
+    <p class="stripe-label">Drawn the way Flutter draws today</p>
+    <canvas class="stripe" id="plain"></canvas>
+    <p class="stripe-label">Drawn the way the shim does</p>
+    <canvas class="stripe" id="shimmed"></canvas>
+    <p class="stripe-label" id="stripe-note">Both stripes move at the same speed. If the lower one looks smoother, this screen is faster than 60 Hz and the shim has something to give here.</p>
+  </div>
+
   <button id="copy">Copy results</button>
   <small id="device"></small>
 </main>
@@ -85,13 +95,86 @@ try {
   results.error = String(error);
 }
 
+// The two stripes: the same movement, drawn the two ways. The upper one is
+// what Flutter does today, a frame per frame-clock callback into an ordinary
+// canvas. The lower one is the shim's way on WebKit: a canvas handed over
+// with transferControlToOffscreen, drawn from a timer rather than inside a
+// frame-clock callback, which is what lets a frame reach the screen between
+// two of the page's own. On a 60 Hz screen they look the same, which is the
+// point of showing both.
+const SPEED = 0.25; // px per ms, the same for both
+function stripes() {
+  const setUp = (id) => {
+    const el = $(id);
+    const dpr = Math.min(devicePixelRatio || 1, 3);
+    const width = Math.round(el.clientWidth * dpr), height = Math.round(el.clientHeight * dpr);
+    return { el, dpr, width, height };
+  };
+  const draw = (ctx, w, h, dpr, time) => {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+    const span = w + 60 * dpr;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(((time * SPEED * dpr) % span) - 60 * dpr, 0, 60 * dpr, h);
+  };
+
+  const plain = setUp('plain');
+  plain.el.width = plain.width;
+  plain.el.height = plain.height;
+  const plainCtx = plain.el.getContext('2d');
+  const plainStep = (time) => { draw(plainCtx, plain.width, plain.height, plain.dpr, time); requestAnimationFrame(plainStep); };
+  requestAnimationFrame(plainStep);
+
+  const shimmed = setUp('shimmed');
+  shimmed.el.width = shimmed.width;
+  shimmed.el.height = shimmed.height;
+  let off, shimCtx;
+  try {
+    off = shimmed.el.transferControlToOffscreen();
+    shimCtx = off.getContext('2d');
+  } catch {
+    $('stripe-note').textContent = 'This browser can\'t hand a canvas over, so only the upper stripe is drawn.';
+    return;
+  }
+  // The page's own clock says where the refreshes are; the frames are drawn
+  // by timers locked to that phase, never inside the callback itself.
+  let vsync = performance.now(), period = 1000 / 60, timer = 0;
+  const phase = () => requestAnimationFrame((time) => {
+    const gap = time - vsync;
+    if (gap > 4 && gap < 40) period += (gap - period) * 0.2;
+    vsync = time;
+    phase();
+  });
+  const tick = () => {
+    draw(shimCtx, shimmed.width, shimmed.height, shimmed.dpr, performance.now());
+    const half = period / 2;
+    const now = performance.now();
+    let target = vsync + Math.ceil((now - vsync) / half) * half;
+    if (target - now < 2) target += half;
+    clearTimeout(timer);
+    timer = setTimeout(tick, Math.max(0, target - now - 5));
+  };
+  phase();
+  tick();
+}
+// A few seconds in, so the first clock readings aren't taken while two more
+// animations are starting up.
+setTimeout(stripes, 4000);
+
 const verdict = () => {
   const { page, worker, workerRaf } = results;
-  if (workerRaf === false) return 'Workers have no frame clock with a canvas here, so the shim can\'t run in this browser.';
-  if (page == null || worker == null) return 'Measuring…';
+  if (page == null) return 'Measuring…';
   if (page >= 100) return 'This browser already runs page animation at full rate: Flutter doesn\'t need the shim here.';
-  if (worker >= page * 1.3 && worker > 75) return 'The worker clock is faster than the page clock: the shim\'s approach can work in this browser.';
-  return 'The worker clock is no faster than the page clock, so the shim can\'t help in this browser.';
+  if (worker != null && worker >= page * 1.3 && worker > 75) {
+    return 'The worker clock is faster than the page clock: the shim\'s Android path works in this browser.';
+  }
+  if (workerRaf === false || worker == null || worker <= page * 1.3) {
+    // Safari and every browser on iOS land here: no faster clock to borrow,
+    // so whether the shim helps is a question about the screen, which a page
+    // can't ask. The stripes are the answer.
+    return 'No clock here is faster than the page\'s. If this is an Apple device, the shim\'s Safari path may still help, and the stripes below are the way to tell: if the lower one is smoother, it does.';
+  }
+  return 'Measuring…';
 };
 
 setInterval(() => {

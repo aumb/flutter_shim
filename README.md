@@ -1,12 +1,15 @@
 # flutter_shim
 
-**120 Hz Flutter web on Android Chrome, with one script tag.**
+**120 Hz Flutter web on Android Chrome and on Safari, with one script tag.**
 
-**Live demo: [shim.mathiewabbas.dev](https://shim.mathiewabbas.dev)**. Open it in Chrome on an Android phone with a 120 Hz screen, pick an app, and tap the badge in the corner to switch between Before and After.
+**Live demo: [shim.mathiewabbas.dev](https://shim.mathiewabbas.dev)**. Open it in Chrome on an Android phone with a 120 Hz screen, or in Safari on a 120 Hz Apple device, pick an app, and tap the badge in the corner to switch between Before and After.
 
-Chrome on Android holds a page's own rendering to 60 frames per second on 120 Hz screens. Flutter web does all of its rendering itself, so its scrolling and animations run at 60 while ordinary web pages scroll at 120. `web/flutter_shim.js` moves Flutter's frame clock and its on-screen canvas to a worker, which Chrome doesn't limit. Your users don't change any settings, and the app's code doesn't change.
+Both browsers hold Flutter web to 60 frames per second on a 120 Hz screen, for different reasons, and `web/flutter_shim.js` lifts both. Your users don't change any settings, and the app's code doesn't change.
 
-Measured on a Pixel 10 Pro XL (Chrome 154, Flutter 3.47.2). Each app was the same build, with and without the shim:
+- **Chrome on Android** holds a page's own rendering to 60 on 120 Hz screens. Flutter does all of its rendering itself, so its scrolling and animations run at 60 while ordinary web pages scroll at 120. The shim moves Flutter's frame clock and its on-screen canvas to a worker, which Chrome doesn't limit.
+- **Safari**, and so every browser on iOS, holds the page's whole rendering update to 60, worker clocks included. There is no faster clock to borrow, so the shim builds one out of timers, and hands Flutter's canvas to an `OffscreenCanvas`, which is shown at the display's rate rather than the rendering update's. This path is [off by default](#iphone-ipad-and-safari); one line turns it on.
+
+On Android, measured on a Pixel 10 Pro XL (Chrome 154, Flutter 3.47.2). Each app was the same build, with and without the shim:
 
 | App (renderer) | After lifting the finger | Slow-drag step variation* |
 |---|---|---|
@@ -18,6 +21,17 @@ Measured on a Pixel 10 Pro XL (Chrome 154, Flutter 3.47.2). Each app was the sam
 
 With the shim, 97–100% of frames reached the screen one refresh (8.3 ms) after the previous one. \*How much the per-frame movement of a steady, slow drag varies; lower is smoother.
 
+And on Safari 26.6 (macOS 26.6, M3 Max, 120 Hz ProMotion display, Flutter 3.47.7), with a scripted drag scrolling each app, and one row measured after letting go of a fling. These count the frames that actually reached the screen, captured from outside the browser (`tool/presented.swift`), as the median time between one new frame and the next:
+
+| App | Before | With the shim |
+|---|---|---|
+| Plain list | 60.1 fps (16.6 ms) | **116.1 fps (8.6 ms)** |
+| Plain list, after letting go of a fling | 59.9 fps (16.7 ms) | **114.3 fps (8.8 ms)** |
+| Material 3 demo | 60.0 fps (16.7 ms) | **114.5 fps (8.7 ms)** |
+| Flutter Gallery, Fortnightly | 59.9 fps (16.7 ms) | **112.2 fps (8.9 ms)** |
+
+Safari runs CanvasKit for all four, including the `--wasm` builds. Wonderous is missing because the scripted drag doesn't scroll the screen it opens on, not because it behaved differently. An iPhone or iPad should behave the same way, since every Apple device runs this same engine, but none of these numbers were measured on one: see [iPhone, iPad and Safari](#iphone-ipad-and-safari).
+
 ## Use it in your app
 
 1. Copy `web/flutter_shim.js` into your app's `web/` folder.
@@ -28,7 +42,15 @@ With the shim, 97–100% of frames reached the screen one refresh (8.3 ms) after
    ```
 3. Build as usual: `flutter build web --wasm` (or without `--wasm` for CanvasKit).
 
-It only switches on in Chrome on Android, and falls back to Flutter's normal path until its worker clock is running. Everywhere else it does nothing.
+That switches it on in Chrome on Android, where it falls back to Flutter's normal path until its worker clock is running. To switch on the Safari path as well, say so before loading it:
+
+```html
+<script>window.flutterShimConfig = { webkit: true };</script>
+<script src="flutter_shim.js"></script>
+<script src="flutter_bootstrap.js" async></script>
+```
+
+That line is asked for rather than assumed because Safari tells a page nothing about the screen it is on, so a 120 Hz iPhone can't be told from a 60 Hz one; [below](#iphone-ipad-and-safari) is what that costs on a 60 Hz device. Everywhere else the script does nothing.
 
 **Renderer, for now:** use single-threaded skwasm or CanvasKit on Flutter stable. Multi-threaded skwasm has a race that can crash with `memory access out of bounds` ([flutter/flutter#193439](https://github.com/flutter/flutter/issues/193439)), and running at 120 Hz makes it more likely. In a stress test of 5 loads × 60 flings, Flutter 3.47.2 crashed in 2 of 5 loads and Flutter master (3.49.0-1.0.pre, with [#190048](https://github.com/flutter/flutter/pull/190048) and [#191014](https://github.com/flutter/flutter/pull/191014)) in none. Multi-threaded skwasm is the better choice once those fixes reach stable. To keep skwasm single-threaded, either serve without cross-origin isolation headers, or set it in a custom `web/flutter_bootstrap.js`:
 
@@ -40,6 +62,8 @@ _flutter.loader.load({ config: { forceSingleThreadedSkwasm: true } });
 
 ## How it works
 
+### Chrome on Android
+
 Chrome on Android decides how often a page may start a frame (`kThrottleMainFrameTo60Hz`, on by default since Chrome 145, only on 120 Hz screens). It lifts the limit for frames triggered by touch movement, so dragging runs at 120, but a fling after you let go runs at 60. Normal web pages scroll on Chrome's compositor thread, which isn't limited; Flutter draws its scrolling itself on the main thread, which is.
 
 A worker that owns a canvas (`transferControlToOffscreen`) gets its own frame clock straight from the compositor, and that clock isn't limited. The shim uses it in three ways:
@@ -48,20 +72,43 @@ A worker that owns a canvas (`transferControlToOffscreen`) gets its own frame cl
 2. **Clock.** `window.requestAnimationFrame` callbacks run on the worker's ticks. Frame times are made strictly increasing and snapped to the refresh grid, because Flutter's animations and scroll physics jump if time stalls or goes backwards.
 3. **Touch.** Chrome delivers touch moves in step with its own frames, not the worker's ticks, so some ticks would see two moves and some none, and slow drags would stutter. The shim holds back touch moves on Flutter's view, and on each tick gives Flutter one move per finger, interpolated to a fixed short delay before the tick, as Android does for native apps. When the finger lifts, Flutter gets the final position before the up event, so flings keep their speed.
 
-Status is at `window.flutterShim` (`active`, `frames`, `error`). To try the shim in desktop Chrome (see "Testing without a phone"), set `window.flutterShimConfig = { anyPlatform: true }` before loading it.
+Status is at `window.flutterShim` (`active`, `frames`, `path`, `error`). To try the shim in desktop Chrome (see "Testing without a phone"), set `window.flutterShimConfig = { anyPlatform: true }` before loading it.
+
+### Safari
+
+WebKit holds the page's rendering update to 60 (`FullSpeedFramesPerSecond = 60` in `AnimationFrameRate.h`), and unlike Chrome it does the same to workers: a worker's `requestAnimationFrame` runs on a 15 ms timer of its own. Measured on a 120 Hz ProMotion Mac where the display really was running at 120 (`tool/display_rate.swift` reads 119.5 ticks a second), Safari gave the page 60.2 callbacks a second and a worker 58.0, while Chrome on the same machine gave 119.7. So there is no faster clock in the browser to borrow, and the shim has to build one and find a way around the limit on showing frames. Two findings make that possible, both from `site/lab` and all measured from outside the browser:
+
+1. **A handed-over canvas is not held to 60.** Drawing into a canvas as the page normally does reaches the screen 59 times a second however often it is drawn. Drawing into the same canvas after `transferControlToOffscreen` reaches the screen 109–116 times a second. The limit is on the page's rendering update, not on showing a canvas.
+2. **A frame has to be drawn in a task of its own.** A canvas drawn *inside* a `requestAnimationFrame` callback is shown as part of that rendering update, which is the thing held to 60, and a frame drawn in between is folded into it and never appears: that way round, the same canvas measures 61 frames a second. Drawn from a timer instead, each frame is shown on its own refresh: 112.
+
+So on Safari the shim:
+
+1. **Display.** Hands Flutter's canvas over with `transferControlToOffscreen` and gives Flutter the handed-over canvas's context, so its frames are shown at the display's rate. Flutter asks for that canvas with Emscripten's own WebGL options (`majorVersion`, `enableExtensionsByDefault`), which no ordinary page passes, so nothing else on the page is touched.
+2. **Clock.** Keeps one empty `requestAnimationFrame` running, never to draw on, only to timestamp a real refresh. Frames are then run by a chain of timers locked to that phase, half a refresh apart. WebKit rounds a timer up to a 4 ms grid and adds about one more, so each tick asks for less than its wait: it only has to land somewhere inside the refresh it belongs to, because every frame carries the time it was drawn for, so motion stays right even when a tick is late.
+3. **Touch.** The same resampling as on Android, for the same reason. One detail is Safari's: Flutter takes a move's movement from its coalesced events, and an event the page makes itself has none, so each resampled move reports itself as its own only sample.
 
 ### Trade-offs
 
-- **It relies on undocumented Chrome behavior.** If Chrome starts limiting worker frame clocks too, the shim simply runs at 60, as Flutter does today. Chrome is also building an official opt-in for high frame rates, for fullscreen canvases, WebXR and pointer lock (`kHighFramerateRequestFromClient`, off by default in Chrome 154).
-- **Battery.** While something animates, Flutter does twice the work per second. An idle page costs nothing: the worker clock stops a few refreshes after the last frame.
-- **Scope.** It replaces `window.requestAnimationFrame` for the whole page, so any other script's animation also runs on the worker clock. Touch moves on Flutter's view reach Flutter as re-dispatched events (`isTrusted` is false). Platform views (`HtmlElementView`, iframes) are left alone.
+- **It relies on undocumented browser behavior.** Both paths do. If Chrome starts limiting worker frame clocks too, or WebKit starts showing a handed-over canvas only with the rendering update, the shim simply runs at 60, as Flutter does today. Chrome is also building an official opt-in for high frame rates, for fullscreen canvases, WebXR and pointer lock (`kHighFramerateRequestFromClient`, off by default in Chrome 154).
+- **Battery.** While something animates, Flutter does twice the work per second. An idle page costs nothing: the clock stops a few refreshes after the last frame. On Safari this is the whole reason the path is off by default, since there the work may buy nothing at all: see [iPhone, iPad and Safari](#iphone-ipad-and-safari).
+- **Scope.** It replaces `window.requestAnimationFrame` for the whole page, so any other script's animation also runs on the shim's clock. Touch moves on Flutter's view reach Flutter as re-dispatched events (`isTrusted` is false). Platform views (`HtmlElementView`, iframes) are left alone.
+- **On Safari, Flutter's canvas is no longer the page's.** The shim hands it to an `OffscreenCanvas`, which is what takes it off the limited path. The canvas stays where it was and keeps its place in the layout, and writes to its `width` and `height` are passed on — that is how Flutter resizes it from 1×1 to the window at startup, and the apps above all render at the right size. But anything that reads pixels back through the element itself, such as `toDataURL`, no longer works on it.
 - **Heavy frames still drop.** The shim gives Flutter every refresh, but a frame that takes longer than 8.3 ms still misses one. In the table above, most of Wonderous's remaining late frames come right after its own slow frames, such as large images or a new section appearing for the first time. With single-threaded skwasm, drawing happens on the main thread too.
 
-### iPhone and iPad
+### iPhone, iPad and Safari
 
-No, as Safari works today. Every iOS browser uses Safari's engine (WebKit), and its 60 fps setting ("Prefer Page Rendering Updates near 60fps") is on by default. WebKit does give workers `requestAnimationFrame`, but it runs on a fixed 15 ms timer ([`WorkerAnimationController.cpp`](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/workers/WorkerAnimationController.cpp)), at most about 66 per second and not in step with the screen, so there's no faster clock to borrow. The iOS 26.5 simulator measured about 60 for the page and about 50 for a worker.
+The Safari path is off by default, and the reason is worth stating plainly: **Safari gives a page no way to find out how fast the screen is.** On a 120 Hz Mac and on a 60 Hz one, `requestAnimationFrame` runs at 60 either way, so a page cannot tell them apart, and the shim cannot switch itself on only where it helps. What was tried, all of it on a Mac whose display was confirmed to be running at 120:
 
-The demo site's **clock probe** (`/probe/`) measures this on any device. Testers open it, wait 10 seconds, and tap **Copy results**. If a future Safari gives workers a faster clock than the page, the probe will show it.
+- **Worker clocks** run at 58 a second, slower than the page's 60.
+- **Timers** land on a 4 ms grid (a chain of `setTimeout(8)` hops every 12 ms, `setTimeout(12)` every 16), which is WebKit's own grid and says nothing about the display.
+- **Flooding a handed-over canvas** with frames runs at 550–730 a second: nothing pushes back at the display's rate.
+- **Missing a frame deadline on purpose** just moves the next callback by as long as the overrun (a 20 ms overrun delays it 20 ms, a 28 ms one 28 ms), so the refresh interval doesn't show through there either.
+
+So turning it on is a decision about your users' devices, and on a 60 Hz one it costs real work for frames that never appear. Scrolling the plain list on this Mac, Safari's processes went from about 35% of one core to about 64%, nearly all of the increase in `com.apple.WebKit.GPU`, which is the process that does the drawing. An idle page still costs nothing: the clock stops when nothing is animating.
+
+**What was and wasn't measured.** Everything above was measured in Safari 26.6 on a 120 Hz ProMotion Mac, with its Safari settings as they ship. Nothing was measured on an iPhone or an iPad. iOS runs this same engine, and Safari's "Prefer Page Rendering Updates near 60fps" setting (Settings → Apps → Safari → Advanced on iOS, Advanced on a Mac) is the knob on the same limit, so the path should behave the same there — but "should" is doing real work in that sentence, and nobody has checked. Two things in particular are untested on a real device: whether a handed-over canvas escapes the limit on iOS as it does on a Mac, and how touch resampling behaves with a real finger rather than the scripted drags used here.
+
+The demo site's **clock probe** (`/probe/`) is the way to find out. Open it on the device, leave it for ten seconds, and tap **Copy results**: it reports the page and worker clocks, and moves two stripes, one above the other, one drawn the way Flutter draws today and one the way the shim does, so you can see with your own eyes whether the second is smoother.
 
 ## The demo
 
@@ -83,7 +130,7 @@ Requirements: Flutter (3.47 or later), Python 3, git. `setup.py` takes example i
 
 Third-party apps are cloned at a pinned commit into `.cache/` (see `examples/examples.json`), not copied into this repo; their own licenses apply. The fixes are in `tool/setup.py`.
 
-On an example page, `?renderer=skwasm-st|skwasm|canvaskit` picks the renderer (the index page has a picker), `?hud=0` hides the badge, and `?anyplatform` runs the shim outside Android Chrome.
+On an example page, `?renderer=skwasm-st|skwasm|canvaskit` picks the renderer (the index page has a picker), `?hud=0` hides the badge, `?anyplatform` runs the Android path outside Android Chrome, `?webkit=0` turns the Safari path off (it is on in the demo, since a tester on an Apple device is here to see it), `?stress=drag|fling|wheel` makes the app drive itself, and `?inspect=1` reports how this browser's Flutter draws.
 
 ### On an Android phone
 
@@ -109,6 +156,25 @@ Desktop Chrome has the same 60 Hz limit, switched off. On a 120 Hz display (such
 ```
 
 The page clock is now 60 and a worker's is 120, as on the phone. Use DevTools device emulation (Android user agent, touch) or add `?anyplatform` to the example URL. The Android emulator isn't a substitute: Chrome in it renders Flutter web blank.
+
+### Testing the Safari path on a Mac
+
+A Mac with a 120 Hz screen runs the same engine as an iPhone, with the same limit, so the Safari path can be developed and measured there. Set the display to ProMotion (not a fixed 60 Hz) and turn Low Power Mode off, or everything measures 60 whatever the browser does.
+
+Safari can't be driven from the outside the way Chrome can, so the pages report their own numbers and the frames are counted from outside the browser:
+
+```sh
+swift tool/display_rate.swift            # what the screen is doing right now, from the display server
+python3 tool/safari.py                   # opens the clock battery in Safari and prints what it measures
+python3 tool/safari.py --url "/lab/?test=mgl&hz=120&keep=1"      # one drawing path (site/lab lists them)
+python3 tool/safari.py --url "/list/after/?stress=drag"          # an example app, driving itself
+swift tool/presented.swift 4 --app Safari                        # frames that reached the screen, while that runs
+sh tool/cpu.sh 6                                                 # what it costs the browser's processes
+```
+
+`tool/presented.swift` is this repo's answer to filming the screen with a slow-motion camera: ScreenCaptureKit hands over the window's pixels at up to 240 frames a second, and it counts the ones that differ from the frame before, so 8.3 ms between new frames means 120 Hz reached the screen. It needs Screen Recording permission, and it brings the window to the front first, since a browser window another app covers is throttled and would measure as a stalled page.
+
+`?stress=drag` on an example page makes it scroll itself with synthetic touch events at the rate a touchscreen would deliver them (`?stress=fling` for repeated flings, `?stress=wheel` for a pointer). `?webkit=0` turns the Safari path off again for a Before/After comparison, and `?inspect=1` reports how this browser's Flutter draws and presents.
 
 ## Hosting
 
@@ -136,15 +202,23 @@ docker run --rm -p 8080:80 flutter-shim-demo   # http://localhost:8080
 ## Layout
 
 ```
-web/flutter_shim.js         the shim
+web/flutter_shim.js         the shim: the worker path for Android, the timer path for WebKit
 examples/examples.json      the example apps: source, pinned commit, start screen
 examples/list/              the plain list app
 examples/gallery/index.html replacement page for the Gallery
-site/                       index page, badge (hud.js), loader options (demo.js), clock probe
+site/                       index page, badge (hud.js), loader options (demo.js)
+site/probe/                 clock probe for any phone or browser, with the two stripes
+site/clocks/                every clock a page can run an animation on, measured one at a time
+site/lab/                   which drawing paths reach the screen at the display's rate
+site/stress.js              scripted input, so a page can be measured without a hand on it
 tool/setup.py               fetch, fix and build the examples
 tool/serve.py               serve the demo, or export it as static files
 tool/measure.mjs            measure a page on an Android phone over adb
 tool/android.sh             open the demo on a phone over adb
+tool/safari.py              run a probe page in Safari and print what it measured
+tool/presented.swift        count the frames that reached the screen, from outside the browser
+tool/display_rate.swift     what the Mac's display is doing, from the display server
+tool/cpu.sh                 processor time a browser's page actually used
 Dockerfile, deploy/         container image for Coolify or any Docker host
 ```
 

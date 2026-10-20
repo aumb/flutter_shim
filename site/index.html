@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Flutter Shim Demo</title>
-<meta name="description" content="Flutter web apps before and after flutter_shim.js, which lets them render at 120 Hz in Chrome on Android.">
+<meta name="description" content="Flutter web apps before and after flutter_shim.js, which lets them render at 120 Hz in Chrome on Android and in Safari.">
 <style>
   :root {
     --bg: #f6f6f7; --surface: #ffffff; --text: #16161a; --muted: #5d5d66; --line: #e3e3e8;
@@ -49,8 +49,8 @@
 </head>
 <body>
 <main>
-  <h1>Flutter web at 120 Hz on Android</h1>
-  <p>Chrome on Android holds a page's own animation to 60 frames per second on 120 Hz screens, so Flutter web apps scroll and animate at 60. <code>flutter_shim.js</code> moves Flutter's frame clock and canvas to a worker, which Chrome doesn't limit.</p>
+  <h1>Flutter web at 120 Hz</h1>
+  <p>Chrome on Android and Safari both hold a page's own animation to 60 frames per second on a 120 Hz screen, so Flutter web apps scroll and animate at 60. <code>flutter_shim.js</code> lifts both: on Android it moves Flutter's frame clock and canvas to a worker, which Chrome doesn't limit; on Safari it builds a clock out of timers and hands Flutter's canvas over, which is shown at the screen's rate rather than the page's.</p>
   <p>Each example below runs from one build, twice: <b>Before</b> as it ships, <b>After</b> with the shim. The badge in the corner shows frames per second; tap it to switch versions on the same screen.</p>
 
   <div class="status" id="status"></div>
@@ -67,15 +67,20 @@
   <div class="apps" id="apps"></div>
 
   <footer>
-    <p><a href="probe/">Clock probe</a>: for testing on iPhone and other browsers. It measures whether a worker gets a faster frame clock than the page, which is what the shim needs.</p>
+    <p><a href="probe/">Clock probe</a>: for testing on an iPhone or any other browser. It measures the clocks a page can run an animation on, and moves two stripes, one drawn the way Flutter draws today and one the way the shim does, so you can see whether this screen is faster than 60 Hz.</p>
   </footer>
 </main>
 <script>
   const androidChrome = /Android/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent);
+  // Every browser on iOS is WebKit, whatever its name says; GestureEvent is
+  // WebKit's alone.
+  const webkit = typeof window.GestureEvent === 'function' || navigator.vendor === 'Apple Computer, Inc.';
   const isolated = self.crossOriginIsolated;
-  document.getElementById('status').innerHTML = androidChrome
-    ? `<span class="dot" style="background:var(--after)"></span><span><b>Android Chrome: the shim will run here.</b> Try a slow scroll and a fling in each version.</span>`
-    : `<span class="dot" style="background:var(--before)"></span><span><b>This isn't Chrome on Android,</b> so Before and After behave the same here. Open this page in Chrome on an Android phone with a 120 Hz screen.</span>`;
+  const dot = (colour, html) => `<span class="dot" style="background:var(--${colour})"></span><span>${html}</span>`;
+  document.getElementById('status').innerHTML =
+    androidChrome ? dot('after', '<b>Android Chrome: the shim will run here.</b> Try a slow scroll and a fling in each version.')
+    : webkit ? dot('after', '<b>Safari: the shim will run here.</b> It only helps if this screen is faster than 60 Hz, which a page can\'t find out — the <a href="probe/">clock probe</a> shows you. Try a slow scroll and a fling in each version.')
+    : dot('before', '<b>This is neither Chrome on Android nor Safari,</b> so Before and After behave the same here. Open this page in Chrome on an Android phone with a 120 Hz screen, or in Safari on a 120 Hz Apple device.');
 
   const select = document.getElementById('renderer');
   if (!isolated) select.querySelector('[value="skwasm"]').textContent = 'skwasm, multi-threaded (not available on this host)';

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Frame Lab</title>
+<meta name="description" content="Moving-stripe tests that show which drawing paths reach the screen at 120 Hz in this browser.">
+<style>
+  :root { --bg: #0b0b0d; --text: #f2f2f4; --muted: #a1a1aa; --accent: #9a8cff; --line: #2a2a31; --surface: #16161a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, sans-serif; }
+  body.test { overflow: hidden; }
+  main { max-width: 640px; margin: 0 auto; padding: max(20px, env(safe-area-inset-top)) 16px 32px; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 12px; }
+  a.test-link { display: block; padding: 12px 14px; margin: 8px 0; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); color: var(--text); text-decoration: none; }
+  a.test-link b { color: var(--accent); }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas, #stage .css-track { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .css-track { overflow: hidden; background: #000; }
+  .css-bar { position: absolute; top: 0; bottom: 0; left: 0; width: 64px; background: #fff; will-change: transform; animation: slide var(--period) linear infinite; }
+  @keyframes slide { from { transform: translateX(0); } to { transform: translateX(var(--travel)); } }
+  #hud { position: fixed; left: 12px; top: max(12px, env(safe-area-inset-top)); padding: 6px 10px; border-radius: 8px; background: rgba(12, 12, 14, 0.8); font: 600 13px/1.3 ui-monospace, Menlo, monospace; z-index: 2; }
+  #keepalive { position: fixed; right: 2px; bottom: 2px; width: 2px; height: 2px; background: #fff; animation: blink 1s linear infinite; z-index: 2; }
+  @keyframes blink { from { opacity: 0.4; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<main id="menu">
+  <h1>Frame lab</h1>
+  <p>Each test moves a white stripe across the screen, drawn a different way. Film the screen with a second phone in slow motion (240 fps): a stripe that moves in small, even steps is reaching the screen at 120 Hz; one that moves in steps twice as big is at 60.</p>
+  <p>The numbers in the corner are what the page produced; only the video shows what the screen displayed.</p>
+  <div id="links"></div>
+</main>
+<script>
+// Tests (?test=...):
+//   raf      main-thread requestAnimationFrame into a normal canvas (reference: page rate)
+//   css      CSS transform animation, run by the compositor (reference: compositor rate)
+//   wtimer   a worker draws into a transferControlToOffscreen canvas on its own timer
+//   wbitmap  like wtimer, but via ImageBitmap + bitmaprenderer, the way Flutter presents
+//   mtimer   the main thread draws into a transferControlToOffscreen canvas on a timer
+//   wraf     a worker draws on the worker's own requestAnimationFrame
+//   ntimer   the main thread draws into a normal canvas on a timer
+//   mbitmap  the main thread presents ImageBitmaps to a handed-over canvas, as Flutter does
+//   mraf2x   like mbitmap, but paced by requestAnimationFrame plus one tick between frames
+// Options: hz=120 (timer rate), keepalive=1 (adds a 2 px CSS animation in a corner),
+//          log=<url> (POSTs the produced-frame rate there once a second).
+const params = new URLSearchParams(location.search);
+const test = params.get('test');
+const TESTS = {
+  raf: 'Page frame clock (reference, usually 60)',
+  css: 'CSS animation (reference, compositor rate)',
+  wtimer: 'Worker canvas on its own timer',
+  wbitmap: 'Worker ImageBitmap on its own timer (Flutter-style)',
+  mtimer: 'Main-thread hand-off canvas on a timer',
+  wraf: "Worker's own frame clock",
+  ntimer: 'Normal canvas on a timer (is the canvas or the clock capped?)',
+  mbitmap: 'Main-thread ImageBitmap to a hand-off canvas (Flutter-style)',
+  mraf2x: 'Main-thread ImageBitmap, paced by the frame clock and halfway between',
+  mgl: 'WebGL into a hand-off canvas on a timer (how CanvasKit draws)',
+  mglraf2x: 'WebGL into a hand-off canvas, paced by the frame clock and halfway between',
+};
+
+if (!test || !TESTS[test]) {
+  document.getElementById('links').innerHTML = Object.entries(TESTS)
+    .map(([id, label]) => `<a class="test-link" href="?test=${id}"><b>${id}</b> · ${label}</a>`).join('');
+} else {
+  run(test);
+}
+
+// Shared drawing: a white stripe that moves a fixed distance per frame, plus
+// the frame number, so a slow-motion video shows every frame distinctly.
+// Workers get these same functions as source text.
+function drawFrame(ctx, w, h, n, dpr) {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  const x = ((n * 12 * dpr) % (w + 64 * dpr)) - 64 * dpr;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x, 0, 64 * dpr, h);
+  ctx.fillStyle = '#9a8cff';
+  ctx.font = 96 * dpr + 'px ui-monospace, Menlo, monospace';
+  ctx.fillText(String(n % 1000).padStart(3, '0'), 24 * dpr, h - 40 * dpr);
+}
+
+// Calls tick() hz times a second on a self-correcting timer.
+function paced(hz, tick) {
+  let next = performance.now();
+  const loop = () => {
+    tick();
+    next += 1000 / hz;
+    const delay = next - performance.now();
+    if (delay < -50) next = performance.now();
+    setTimeout(loop, Math.max(0, delay));
+  };
+  loop();
+}
+
+// Calls tick() on every frame-clock callback and once more halfway between
+// two of them. Where the page's clock is held to half the display's rate, it
+// is still in step with the screen, so the extra tick lands on the refresh
+// the clock skipped: a 120 Hz cadence with the phase of real vsyncs.
+function phaseLocked(tick) {
+  let previous = 0, period = 1000 / 60, half = 0;
+  const step = (time) => {
+    const gap = time - previous;
+    if (previous && gap > 4 && gap < 40) period += (gap - period) * 0.2;
+    previous = time;
+    tick();
+    clearTimeout(half);
+    half = setTimeout(tick, period / 2);
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function run(test) {
+  // A test stops for good once its tab has been hidden for a few seconds, so
+  // tests left open in background tabs don't compete with the one being
+  // measured. The delay matters: a browser that opens a new tab behind the
+  // current one hides this page for a moment before showing it.
+  // (?keep=1 leaves the test running: a window that another app covers counts
+  // as hidden here, which would otherwise end a run being measured.)
+  let hiddenSince = 0;
+  if (params.get('keep') !== '1') {
+    document.addEventListener('visibilitychange', () => {
+      clearTimeout(hiddenSince);
+      if (document.hidden) hiddenSince = setTimeout(() => location.replace('about:blank'), 3000);
+    });
+  }
+  document.body.className = 'test';
+  document.getElementById('menu').remove();
+  document.title = `Frame Lab: ${test}`;
+  const hz = Number(params.get('hz')) || 120;
+  const stage = document.createElement('div');
+  stage.id = 'stage';
+  document.body.append(stage);
+  const hud = document.createElement('div');
+  hud.id = 'hud';
+  hud.textContent = `${test} · starting`;
+  document.body.append(hud);
+  if (params.get('keepalive') === '1') {
+    const k = document.createElement('div');
+    k.id = 'keepalive';
+    document.body.append(k);
+  }
+
+  let produced = 0; // frames drawn by this test, for the HUD
+  const report = (rate) => {
+    hud.textContent = `${test} · ${rate.toFixed(0)} frames/s produced`;
+    const log = params.get('log');
+    if (log) navigator.sendBeacon(log, JSON.stringify({ test, hz, rate, run: params.get('run'), ua: navigator.userAgent }));
+  };
+
+  const dpr = devicePixelRatio;
+  const size = () => [Math.round(innerWidth * dpr), Math.round(innerHeight * dpr)];
+
+  if (test === 'css') {
+    const track = document.createElement('div');
+    track.className = 'css-track';
+    const bar = document.createElement('div');
+    bar.className = 'css-bar';
+    // Same speed as the canvas tests at 120 Hz: 12 px per 8.33 ms.
+    const travel = innerWidth + 64;
+    bar.style.setProperty('--travel', `${travel}px`);
+    bar.style.setProperty('--period', `${(travel / 12) * (1000 / 120)}ms`);
+    track.append(bar);
+    stage.append(track);
+    setInterval(() => { hud.textContent = 'css · compositor animation (count frames on video)'; }, 1000);
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  [canvas.width, canvas.height] = size();
+  stage.append(canvas);
+  let lastCount = 0;
+  setInterval(() => { report(produced - lastCount); lastCount = produced; }, 1000);
+
+  if (test === 'raf') {
+    const ctx = canvas.getContext('2d');
+    const step = () => { drawFrame(ctx, canvas.width, canvas.height, produced++, dpr); requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  } else if (test === 'ntimer') {
+    const ctx = canvas.getContext('2d');
+    paced(hz, () => drawFrame(ctx, canvas.width, canvas.height, produced++, dpr));
+  } else if (test === 'mtimer') {
+    const off = canvas.transferControlToOffscreen();
+    const ctx = off.getContext('2d');
+    paced(hz, () => drawFrame(ctx, off.width, off.height, produced++, dpr));
+  } else if (test === 'mgl' || test === 'mglraf2x') {
+    // CanvasKit draws straight into a WebGL canvas, so the hand-off has to
+    // work for WebGL too, not only for the 2D and bitmap paths.
+    const off = canvas.transferControlToOffscreen();
+    const gl = off.getContext('webgl2') ?? off.getContext('webgl');
+    if (!gl) { hud.textContent = `${test} · no WebGL on a handed-over canvas`; return; }
+    (test === 'mglraf2x' ? (tick) => phaseLocked(tick) : (tick) => paced(hz, tick))(() => {
+      const n = produced++;
+      const x = ((n * 12 * dpr) % (off.width + 64 * dpr)) - 64 * dpr;
+      gl.viewport(0, 0, off.width, off.height);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(Math.max(0, x), 0, 64 * dpr, off.height);
+      gl.clearColor(1, 1, 1, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.disable(gl.SCISSOR_TEST);
+    });
+  } else if (test === 'mbitmap' || test === 'mraf2x') {
+    // Flutter's own presentation, from the main thread: draw a frame, then
+    // hand it to a 'bitmaprenderer' context on a canvas the page has given up.
+    const off = canvas.transferControlToOffscreen();
+    const ctx = off.getContext('bitmaprenderer');
+    const scratch = new OffscreenCanvas(off.width, off.height);
+    const sctx = scratch.getContext('2d');
+    const present = () => {
+      drawFrame(sctx, scratch.width, scratch.height, produced++, dpr);
+      ctx.transferFromImageBitmap(scratch.transferToImageBitmap());
+    };
+    if (test === 'mraf2x') phaseLocked(present);
+    else paced(hz, present);
+  } else {
+    const worker = new Worker(URL.createObjectURL(new Blob([`${drawFrame}\n${paced}\n` + `
+      let produced = 0;
+      onmessage = ({ data: { canvas, test, hz, dpr } }) => {
+        if (test === 'wbitmap') {
+          const ctx = canvas.getContext('bitmaprenderer');
+          const scratch = new OffscreenCanvas(canvas.width, canvas.height);
+          const sctx = scratch.getContext('2d');
+          paced(hz, () => { drawFrame(sctx, scratch.width, scratch.height, produced++, dpr); ctx.transferFromImageBitmap(scratch.transferToImageBitmap()); });
+        } else {
+          const ctx = canvas.getContext('2d');
+          const tick = () => drawFrame(ctx, canvas.width, canvas.height, produced++, dpr);
+          if (test === 'wraf') { const step = () => { tick(); requestAnimationFrame(step); }; requestAnimationFrame(step); }
+          else paced(hz, tick);
+        }
+        setInterval(() => postMessage(produced), 250);
+      };`], { type: 'text/javascript' })));
+    worker.onmessage = ({ data }) => { produced = data; };
+    const off = canvas.transferControlToOffscreen();
+    worker.postMessage({ canvas: off, test, hz, dpr }, [off]);
+  }
+}
+</script>
+</body>
+</html>
